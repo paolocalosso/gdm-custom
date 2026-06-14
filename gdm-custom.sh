@@ -64,6 +64,13 @@ REMOVE_ACCENT_RING=1
 # Assume "yes" for package installation prompts (set by --yes).
 ASSUME_YES=0
 
+# Interactive file selection via a TUI file manager (yazi preferred, then
+# ranger) for background / font / icon / cursor. Disable with --no-picker;
+# force one with --picker yazi|ranger.
+USE_PICKER=1
+PICKER_PREF=""   # "" = auto-detect (yazi, then ranger)
+PICKER=""        # resolved by detect_picker(): "yazi" | "ranger" | ""
+
 # ──────────────────────────────────────────────────────────────────────────
 #  Internal paths — no need to edit.
 # ──────────────────────────────────────────────────────────────────────────
@@ -107,11 +114,15 @@ OPTIONS:
       --no-shell-patch     do not flatten grey element backgrounds
       --keep-accent-ring   keep the accent focus ring around entries/buttons
   -y, --yes                assume "yes" for package install prompts
+      --picker NAME        file manager for interactive selection: yazi|ranger|none
+      --no-picker          type paths manually instead of opening a file manager
       --reset              remove customization and restore defaults
   -h, --help               show this help
   -V, --version            show version
 
 With no configuration options, $PROG prompts interactively (on a terminal).
+In interactive mode you can press Enter at the background/font/icon/cursor
+prompts to pick a file or folder with yazi or ranger, if installed.
 
 REQUIREMENTS: imagemagick, glib (gresource, glib-compile-resources), dconf,
 fontconfig. Missing packages are detected and you'll be offered to install them.
@@ -183,15 +194,96 @@ ask() {
     printf -v "$__var" '%s' "$__ans"
 }
 
+# Home directory of the invoking user (not /root when run under sudo).
+user_home() {
+    if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+        getent passwd "$SUDO_USER" | cut -d: -f6
+    else
+        printf '%s' "${HOME:-/}"
+    fi
+}
+
+# Resolve which TUI file manager to use (once). Honors --picker / --no-picker.
+detect_picker() {
+    [[ "$USE_PICKER" == "1" ]] || { PICKER=""; return; }
+    [[ -n "$PICKER" ]] && return   # already resolved
+    if [[ -n "$PICKER_PREF" ]]; then
+        command -v "$PICKER_PREF" >/dev/null 2>&1 && PICKER="$PICKER_PREF" \
+            || warn "Requested picker '$PICKER_PREF' not found — using text input."
+        return
+    fi
+    if   command -v yazi   >/dev/null 2>&1; then PICKER="yazi"
+    elif command -v ranger >/dev/null 2>&1; then PICKER="ranger"
+    fi
+}
+
+# Launch the file manager to pick a path. mode=file|dir. Writes the choice to
+# $out. Runs as the invoking user so it starts in their $HOME and can read
+# their files (the script itself runs as root).
+run_picker() {
+    local mode="$1" start="$2" out="$3"
+    local -a cmd
+    case "$PICKER" in
+        yazi)
+            if [[ "$mode" == "dir" ]]; then cmd=(yazi "$start" --cwd-file="$out")
+            else                            cmd=(yazi "$start" --chooser-file="$out"); fi ;;
+        ranger)
+            if [[ "$mode" == "dir" ]]; then cmd=(ranger --choosedir="$out" "$start")
+            else                            cmd=(ranger --choosefile="$out" "$start"); fi ;;
+        *) return 1 ;;
+    esac
+    if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+        sudo -u "$SUDO_USER" -- "${cmd[@]}"
+    else
+        "${cmd[@]}"
+    fi
+}
+
+# pick_path VAR "Prompt" mode(file|dir) "default"
+# Lets the user type a value, or press Enter to browse with the file manager.
+# Falls back to a plain prompt when no picker is available.
+pick_path() {
+    local __var="$1" __prompt="$2" __mode="${3:-file}" __def="${4:-}"
+    detect_picker
+    if [[ -z "$PICKER" || ! -t 0 ]]; then
+        ask "$__var" "$__prompt" "$__def"
+        return
+    fi
+
+    local __hint __ans
+    if [[ "$__mode" == "dir" ]]; then __hint="Enter to browse a folder with $PICKER"
+    else                              __hint="Enter to browse with $PICKER"; fi
+    read -r -p "$__prompt — $__hint, or type a value${__def:+ [$__def]}: " __ans || true
+
+    if [[ -z "$__ans" ]]; then
+        if [[ -n "$__def" ]]; then
+            __ans="$__def"
+        else
+            local __out; __out="$(mktemp)"
+            if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+                chown "$SUDO_USER" "$__out" 2>/dev/null || true
+            fi
+            if run_picker "$__mode" "$(user_home)" "$__out"; then
+                __ans="$(< "$__out")"
+                __ans="${__ans%%$'\n'*}"   # first line only (multi-select safety)
+            else
+                warn "Picker exited without a selection."
+            fi
+            rm -f "$__out"
+        fi
+    fi
+    printf -v "$__var" '%s' "$__ans"
+}
+
 prompt_config() {
     [[ -t 0 ]] || die "No configuration provided and not running interactively. See --help."
     echo
     echo "── Interactive setup (press Enter to keep the shown default) ──"
-    ask BACKGROUND     "Background image path"                    "$BACKGROUND"
+    pick_path BACKGROUND "Background image" file "$BACKGROUND"
     ask FONT_NAME      "Greeter font (\"Family Size\", empty=keep)" "$FONT_NAME"
-    [[ -n "$FONT_NAME" ]] && ask FONT_SRC "  Font file/dir to install (empty=already installed)" "$FONT_SRC"
-    ask ICON_THEME     "Icon theme name or path (empty=keep)"      "$ICON_THEME"
-    ask CURSOR_THEME   "Cursor theme name or path (empty=keep)"    "$CURSOR_THEME"
+    [[ -n "$FONT_NAME" ]] && pick_path FONT_SRC "  Font file to install (empty=already installed)" file "$FONT_SRC"
+    pick_path ICON_THEME   "Icon theme name (empty=keep)"   dir "$ICON_THEME"
+    pick_path CURSOR_THEME "Cursor theme name (empty=keep)" dir "$CURSOR_THEME"
 
     local adv
     read -r -p "Customize advanced options (blur/brightness/opacity)? [y/N] " adv || true
@@ -480,6 +572,14 @@ while [[ $# -gt 0 ]]; do
         --no-shell-patch)  PATCH_SHELL_THEME=0; GOT_CONFIG=1; shift ;;
         --keep-accent-ring) REMOVE_ACCENT_RING=0; GOT_CONFIG=1; shift ;;
         -y|--yes)          ASSUME_YES=1; shift ;;
+        --no-picker)       USE_PICKER=0; shift ;;
+        --picker)
+            case "${2:-}" in
+                none|off) USE_PICKER=0 ;;
+                yazi|ranger) PICKER_PREF="$2" ;;
+                *) die "Invalid --picker '${2:-}' (use yazi|ranger|none)." ;;
+            esac
+            shift 2 ;;
         --reset)           ACTION="reset"; shift ;;
         -h|--help)         usage; exit 0 ;;
         -V|--version)      echo "$PROG $VERSION"; exit 0 ;;

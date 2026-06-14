@@ -19,6 +19,10 @@ Tested on **Ubuntu 26.04 / GNOME 50 / Wayland**.
   greeter actually loads.
 - Fully reversible with `--reset`.
 - Interactive prompts **and** scriptable CLI flags.
+- Optional **file-manager picker** (`yazi` preferred, then `ranger`) in
+  interactive mode: press Enter at the background/font/icon/cursor prompts to
+  browse for a file or folder instead of typing the path. `yazi` even previews
+  images, so you can choose the background by sight.
 
 ## Requirements
 
@@ -27,11 +31,19 @@ Tested on **Ubuntu 26.04 / GNOME 50 / Wayland**.
 `apt` (use `--yes` to skip the prompt). On non-apt systems it prints the
 package list and exits.
 
+The interactive file-manager picker is **optional**: install `yazi` or
+`ranger` to use it. Without either, the prompts fall back to typing paths by
+hand (equivalent to `--no-picker`).
+
 ## Usage
 
 ```bash
-# Interactive (prompts for background, font, icon theme, cursor):
+# Interactive (prompts for background, font, icon theme, cursor;
+# press Enter at a prompt to browse with yazi/ranger if installed):
 sudo ./gdm-custom.sh
+
+# Interactive but always type paths by hand:
+sudo ./gdm-custom.sh --no-picker
 
 # Non-interactive with flags:
 sudo ./gdm-custom.sh \
@@ -72,6 +84,8 @@ sudo systemctl restart gdm3   # or: sudo systemctl restart gdm
 | `--no-shell-patch` | Do not flatten grey element backgrounds. |
 | `--keep-accent-ring` | Keep the accent focus ring around entries/buttons. |
 | `-y, --yes` | Assume "yes" for package install prompts. |
+| `--picker NAME` | File manager for interactive selection: `yazi`, `ranger` or `none`. |
+| `--no-picker` | Type paths manually instead of opening a file manager. |
 | `--reset` | Remove customization and restore defaults. |
 | `-h, --help` / `-V, --version` | Help / version. |
 
