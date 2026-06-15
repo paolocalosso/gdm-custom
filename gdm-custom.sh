@@ -54,6 +54,15 @@ BRIGHTNESS=95
 # Background fit: zoom | cover | scaled | spanned | centered
 BACKGROUND_SIZE="zoom"
 
+# Repeat the (zoomed) image on EVERY monitor instead of stretching one image
+# across all (GDM's native multi-monitor behavior). 1 = on, 0 = off.
+# When on, a composite image is built from the monitor layout and
+# background-size is forced to 'spanned'.
+MULTI_MONITOR=0
+# Manual monitor geometry, comma-separated "WxH+X+Y" in logical pixels.
+# Empty = auto-detect from monitors.xml. Setting this implies MULTI_MONITOR=1.
+MONITORS_MANUAL=""
+
 # Flatten the grey element backgrounds of the greeter (1 = on, 0 = off).
 PATCH_SHELL_THEME=1
 # Opacity (over black) of the flattened element backgrounds. 0–1.
@@ -110,6 +119,8 @@ OPTIONS:
       --blur N             gaussian blur radius (default: $BLUR_RADIUS)
       --brightness N       background brightness %% (default: $BRIGHTNESS)
       --size MODE          background fit: zoom|cover|scaled|spanned|centered
+      --multi-monitor      repeat the image on every monitor (auto-detect layout)
+      --monitors GEOM      manual monitor layout "WxH+X+Y,WxH+X+Y" (implies --multi-monitor)
       --opacity F          flattened element background opacity 0-1 (default: $ELEMENT_BG_OPACITY)
       --no-shell-patch     do not flatten grey element backgrounds
       --keep-accent-ring   keep the accent focus ring around entries/buttons
@@ -467,6 +478,110 @@ EOF
 # ──────────────────────────────────────────────────────────────────────────
 #  Apply / reset
 # ──────────────────────────────────────────────────────────────────────────
+# List currently connected DRM connectors (e.g. "DP-1", "HDMI-1").
+connected_connectors() {
+    local s d n
+    for s in /sys/class/drm/*/status; do
+        [[ -f "$s" ]] || continue
+        [[ "$(cat "$s" 2>/dev/null)" == "connected" ]] || continue
+        d="${s%/status}"; n="${d##*/}"
+        echo "${n#card*-}"          # strip leading "cardN-"
+    done
+}
+
+# Emit one "WxH+X+Y" (logical pixels) per logical monitor. Manual list wins.
+# Otherwise parse monitors.xml and pick the <configuration> whose monitors
+# match the CURRENTLY connected outputs (so 2/3/N-monitor setups all work,
+# instead of blindly taking the first stored layout). Needs python3.
+detect_monitors() {
+    if [[ -n "$MONITORS_MANUAL" ]]; then
+        tr ',' '\n' <<< "$MONITORS_MANUAL" | sed '/^$/d'
+        return
+    fi
+    local xml="" cand
+    for cand in /var/lib/gdm3/.config/monitors.xml \
+                /var/lib/gdm/.config/monitors.xml \
+                "$(user_home)/.config/monitors.xml"; do
+        [[ -f "$cand" ]] && { xml="$cand"; break; }
+    done
+    [[ -n "$xml" ]] || { warn "No monitors.xml found — pass --monitors \"WxH+X+Y,...\"."; return 1; }
+    command -v python3 >/dev/null 2>&1 || { warn "python3 needed to parse monitors.xml — use --monitors."; return 1; }
+    local connected; connected="$(connected_connectors | paste -sd, -)"
+    info "Reading monitor layout from $xml (connected: ${connected:-unknown})" >&2
+    python3 - "$xml" "$connected" <<'PY'
+import sys, xml.etree.ElementTree as ET
+root = ET.parse(sys.argv[1]).getroot()
+connected = set(filter(None, (sys.argv[2] if len(sys.argv) > 2 else "").split(',')))
+
+def connectors(cfg):
+    out = set()
+    for lm in cfg.findall('logicalmonitor'):
+        for mon in lm.findall('monitor'):
+            c = mon.findtext('monitorspec/connector')
+            if c: out.add(c)
+    return out
+
+configs = root.findall('configuration')
+if not configs:
+    sys.exit(1)
+
+# Choose the configuration best matching the connected outputs:
+# exact set match first, then most overlap, then most monitors.
+def score(cfg):
+    cons = connectors(cfg)
+    exact = 1 if (connected and cons == connected) else 0
+    overlap = len(cons & connected) if connected else 0
+    return (exact, overlap, len(cfg.findall('logicalmonitor')))
+
+cfg = max(configs, key=score)
+
+for lm in cfg.findall('logicalmonitor'):
+    x = int(lm.findtext('x', '0')); y = int(lm.findtext('y', '0'))
+    scale = float(lm.findtext('scale', '1') or '1')
+    mon = lm.find('monitor'); mode = mon.find('mode') if mon is not None else None
+    if mode is None: continue
+    w = int(mode.findtext('width')); h = int(mode.findtext('height'))
+    tr = lm.findtext('transform/rotation', '') or ''
+    if tr in ('90', '270', 'left', 'right'): w, h = h, w
+    lw = max(1, round(w/scale)); lh = max(1, round(h/scale))
+    print(f"{lw}x{lh}+{x}+{y}")
+PY
+}
+
+# Build a composite background: a zoomed copy of the image per monitor rect,
+# placed at its position, so GDM 'spanned' shows the full image on each screen.
+build_multi_bg() {
+    local IM="$1"; shift
+    local -a rects=("$@")
+    local maxw=0 maxh=0 r w h x y
+    for r in "${rects[@]}"; do
+        w=${r%%x*}; h=${r#*x}; h=${h%%+*}
+        x=${r#*+}; x=${x%%+*}; y=${r##*+}
+        (( x+w > maxw )) && maxw=$((x+w))
+        (( y+h > maxh )) && maxh=$((y+h))
+    done
+    [[ $maxw -gt 0 && $maxh -gt 0 ]] || die "Invalid monitor geometry."
+    info "Composite canvas ${maxw}x${maxh} for ${#rects[@]} monitor(s)…"
+    local tmp; tmp="$(mktemp -d)"
+    local canvas="$tmp/canvas.png"
+    # PNG24: forces a true RGB canvas. A plain "xc:black" is detected as
+    # Grayscale, which would desaturate the composited color tiles.
+    "$IM" -size "${maxw}x${maxh}" xc:black PNG24:"$canvas"
+    local i=0
+    for r in "${rects[@]}"; do
+        w=${r%%x*}; h=${r#*x}; h=${h%%+*}
+        x=${r#*+}; x=${x%%+*}; y=${r##*+}
+        local tile="$tmp/tile_$i.jpg"
+        "$IM" "$BACKGROUND" -resize "${w}x${h}^" -gravity center -extent "${w}x${h}" \
+            -blur "0x${BLUR_RADIUS}" -modulate "${BRIGHTNESS},100,100" "$tile"
+        "$IM" "$canvas" "$tile" -geometry "+${x}+${y}" -composite -colorspace sRGB PNG24:"$canvas"
+        i=$((i+1))
+    done
+    "$IM" "$canvas" -colorspace sRGB "$BG_DEST"
+    chmod 0644 "$BG_DEST"
+    rm -rf "$tmp"
+}
+
 do_apply() {
     require_root
     check_and_install_deps
@@ -486,10 +601,25 @@ do_apply() {
     [[ -n "$FONT_SRC" ]] && install_font "$FONT_SRC"
 
     # Process background (blur + brightness)
-    info "Processing background with ${IM} (blur=${BLUR_RADIUS}, brightness=${BRIGHTNESS}%)…"
     mkdir -p "$BG_DEST_DIR"
-    "$IM" "$BACKGROUND" -blur "0x${BLUR_RADIUS}" -modulate "${BRIGHTNESS},100,100" "$BG_DEST"
-    chmod 0644 "$BG_DEST"
+    [[ -n "$MONITORS_MANUAL" ]] && MULTI_MONITOR=1
+    if [[ "$MULTI_MONITOR" == "1" ]]; then
+        local -a RECTS=()
+        mapfile -t RECTS < <(detect_monitors)
+        if [[ ${#RECTS[@]} -ge 1 ]]; then
+            info "Building multi-monitor background (repeat on each screen)…"
+            build_multi_bg "$IM" "${RECTS[@]}"
+            BACKGROUND_SIZE="spanned"   # required so the composite maps 1:1
+        else
+            warn "Could not determine monitor layout — falling back to single image."
+            "$IM" "$BACKGROUND" -blur "0x${BLUR_RADIUS}" -modulate "${BRIGHTNESS},100,100" "$BG_DEST"
+            chmod 0644 "$BG_DEST"
+        fi
+    else
+        info "Processing background with ${IM} (blur=${BLUR_RADIUS}, brightness=${BRIGHTNESS}%)…"
+        "$IM" "$BACKGROUND" -blur "0x${BLUR_RADIUS}" -modulate "${BRIGHTNESS},100,100" "$BG_DEST"
+        chmod 0644 "$BG_DEST"
+    fi
 
     # Ensure the gdm dconf profile exists (without it, nothing applies)
     if [[ ! -f "$DCONF_PROFILE" ]]; then
@@ -568,6 +698,8 @@ while [[ $# -gt 0 ]]; do
         --blur)            BLUR_RADIUS="$2"; GOT_CONFIG=1; shift 2 ;;
         --brightness)      BRIGHTNESS="$2"; GOT_CONFIG=1; shift 2 ;;
         --size)            BACKGROUND_SIZE="$2"; GOT_CONFIG=1; shift 2 ;;
+        --multi-monitor)   MULTI_MONITOR=1; GOT_CONFIG=1; shift ;;
+        --monitors)        MONITORS_MANUAL="$2"; MULTI_MONITOR=1; GOT_CONFIG=1; shift 2 ;;
         --opacity)         ELEMENT_BG_OPACITY="$2"; GOT_CONFIG=1; shift 2 ;;
         --no-shell-patch)  PATCH_SHELL_THEME=0; GOT_CONFIG=1; shift ;;
         --keep-accent-ring) REMOVE_ACCENT_RING=0; GOT_CONFIG=1; shift ;;

@@ -80,6 +80,8 @@ sudo systemctl restart gdm3   # or: sudo systemctl restart gdm
 | `--blur N` | Gaussian blur radius (default `12`). |
 | `--brightness N` | Background brightness % (default `95`). |
 | `--size MODE` | Background fit: `zoom\|cover\|scaled\|spanned\|centered`. |
+| `--multi-monitor` | Repeat the image on every monitor (auto-detect layout). |
+| `--monitors GEOM` | Manual layout `"WxH+X+Y,WxH+X+Y"` (implies `--multi-monitor`). |
 | `--opacity F` | Flattened element background opacity, `0`–`1` (default `0.20`). |
 | `--no-shell-patch` | Do not flatten grey element backgrounds. |
 | `--keep-accent-ring` | Keep the accent focus ring around entries/buttons. |
