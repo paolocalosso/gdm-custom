@@ -69,6 +69,9 @@ PATCH_SHELL_THEME=1
 ELEMENT_BG_OPACITY=0.20
 # Remove the accent-colored focus ring (border) around entries/buttons.
 REMOVE_ACCENT_RING=1
+# Corner radius of the login elements (user selector, password field,
+# "Not listed?"). "9999px" = fully rounded (pill). Empty = leave theme default.
+ELEMENT_RADIUS="9999px"
 
 # Assume "yes" for package installation prompts (set by --yes).
 ASSUME_YES=0
@@ -417,6 +420,8 @@ patch_shell_theme() {
         local RING=""
         [[ "$REMOVE_ACCENT_RING" == "1" ]] && RING="  box-shadow: none !important;
   border: 0 !important;"
+        local RADIUS=""
+        [[ -n "$ELEMENT_RADIUS" ]] && RADIUS="  border-radius: ${ELEMENT_RADIUS} !important;"
         cat >> "$CSS" <<EOF
 
 /* ── gdm-custom: flatten login elements ─────────────────────────────── */
@@ -445,6 +450,7 @@ patch_shell_theme() {
 .login-dialog-user-list-view .login-dialog-user-list .login-dialog-user-list-item:active,
 StEntry, StEntry:focus, StEntry:hover, StEntry:active {
   background-color: ${RGBA} !important;
+${RADIUS}
 ${RING}
 }
 EOF
