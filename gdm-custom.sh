@@ -75,6 +75,9 @@ ELEMENT_RADIUS="9999px"
 # Make the user selector (username) background fully transparent, overriding
 # ELEMENT_BG_OPACITY just for that element. 1 = transparent, 0 = use opacity.
 USER_ITEM_TRANSPARENT=1
+# Hide the "Not listed?" button on the greeter (St has no 'visibility', so it
+# is collapsed via opacity + zero size). 1 = hidden, 0 = shown.
+HIDE_NOT_LISTED=1
 
 # Assume "yes" for package installation prompts (set by --yes).
 ASSUME_YES=0
@@ -470,6 +473,19 @@ EOF
 }
 .login-dialog-user-list-view .login-dialog-user-list .login-dialog-user-list-item:hover {
   background-color: ${RGBA} !important;
+}
+EOF
+        fi
+        if [[ "$HIDE_NOT_LISTED" == "1" ]]; then
+            cat >> "$CSS" <<EOF
+.login-dialog-not-listed-button {
+  opacity: 0 !important;
+  height: 0 !important;
+  width: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: 0 !important;
+  box-shadow: none !important;
 }
 EOF
         fi
