@@ -78,6 +78,16 @@ USER_ITEM_TRANSPARENT=0
 # Hide the "Not listed?" button on the greeter (St has no 'visibility', so it
 # is collapsed via opacity + zero size). 1 = hidden, 0 = shown.
 HIDE_NOT_LISTED=1
+# Hover/selected effects on login elements: brighten the veil + an accent
+# border (inset box-shadow, no layout shift) with a smooth transition.
+# 1 = on, 0 = off.
+ELEMENT_EFFECTS=1
+# Use the dominant color of the background image for the effects instead of
+# GNOME's accent color. 1 = on, 0 = use -st-accent-color.
+ACCENT_FROM_BACKGROUND=1
+# Manual accent override, e.g. "#e0af68". Wins over ACCENT_FROM_BACKGROUND.
+# Empty = auto/none.
+ACCENT_COLOR=""
 
 # Assume "yes" for package installation prompts (set by --yes).
 ASSUME_YES=0
@@ -489,6 +499,39 @@ EOF
 }
 EOF
         fi
+        if [[ "$ELEMENT_EFFECTS" == "1" ]]; then
+            # Accent color: dominant-from-background if resolved, else GNOME's.
+            local ACC="-st-accent-color"
+            [[ -n "${ACCENT_RESOLVED:-}" ]] && ACC="${ACCENT_RESOLVED}"
+            cat >> "$CSS" <<EOF
+/* smooth transition on the interactive login elements */
+.login-dialog-user-list-view .login-dialog-user-list .login-dialog-user-list-item,
+.login-dialog .login-dialog-auth-list-item,
+.login-dialog .login-dialog-prompt-entry,
+.login-dialog-prompt-entry,
+StEntry {
+  transition-duration: 200ms !important;
+}
+/* brighten veil + accent border on hover */
+.login-dialog-user-list-view .login-dialog-user-list .login-dialog-user-list-item:hover,
+.login-dialog .login-dialog-auth-list-item:hover,
+.login-dialog .login-dialog-prompt-entry:hover,
+.login-dialog-prompt-entry:hover,
+StEntry:hover {
+  background-color: rgba(255,255,255,0.12) !important;
+  box-shadow: inset 0 0 0 2px st-transparentize(${ACC}, 0.45) !important;
+}
+/* accent tint + stronger accent border on selected / focused */
+.login-dialog-user-list-view .login-dialog-user-list .login-dialog-user-list-item:selected,
+.login-dialog .login-dialog-auth-list-item:selected,
+.login-dialog .login-dialog-prompt-entry:focus,
+.login-dialog-prompt-entry:focus,
+StEntry:focus {
+  background-color: st-transparentize(${ACC}, 0.80) !important;
+  box-shadow: inset 0 0 0 2px st-transparentize(${ACC}, 0.30) !important;
+}
+EOF
+        fi
         echo "    • patched: ${CSS#"$WORK"/}"
         hits=$((hits+1))
     done < <(find "$WORK" -type f -name '*.css')
@@ -591,6 +634,32 @@ PY
 
 # Build a composite background: a zoomed copy of the image per monitor rect,
 # placed at its position, so GDM 'spanned' shows the full image on each screen.
+# Print a hex color (#rrggbb) for the dominant/most-vivid color of an image.
+compute_accent() {
+    local IM="$1" img="$2" hex=""
+    if command -v python3 >/dev/null 2>&1; then
+        hex="$("$IM" "$img" -resize 100x100 -colors 16 -depth 8 \
+                  -format "%c" histogram:info:- 2>/dev/null | python3 -c '
+import sys, re
+best=None; bs=-1
+for line in sys.stdin:
+    m=re.search(r"\((\d+),(\d+),(\d+)", line)
+    h=re.search(r"#([0-9A-Fa-f]{6})", line)
+    if not (m and h): continue
+    r,g,b=map(int, m.groups())
+    mx=max(r,g,b); mn=min(r,g,b)
+    sat=0 if mx==0 else (mx-mn)/mx
+    score=sat*mx           # vivid, not too dark
+    if score>bs: bs=score; best="#"+h.group(1).lower()
+print(best or "")
+' 2>/dev/null)"
+    fi
+    # Fallback: average color.
+    [[ -z "$hex" ]] && hex="$("$IM" "$img" -resize '1x1!' -depth 8 \
+        -format "%c" histogram:info:- 2>/dev/null | grep -oE '#[0-9A-Fa-f]{6}' | head -1)"
+    printf '%s' "${hex,,}"
+}
+
 build_multi_bg() {
     local IM="$1"; shift
     local -a rects=("$@")
@@ -631,6 +700,15 @@ do_apply() {
     [[ -f "$BACKGROUND" ]] || die "Background image not found: $BACKGROUND"
     local IM; IM="$(im_cmd)"
     [[ -n "$IM" ]] || die "ImageMagick not available."
+
+    # Resolve the effect accent color (global, read by patch_shell_theme).
+    ACCENT_RESOLVED=""
+    if [[ -n "$ACCENT_COLOR" ]]; then
+        ACCENT_RESOLVED="$ACCENT_COLOR"
+    elif [[ "$ACCENT_FROM_BACKGROUND" == "1" ]]; then
+        ACCENT_RESOLVED="$(compute_accent "$IM" "$BACKGROUND")"
+        [[ -n "$ACCENT_RESOLVED" ]] && info "Accent from background: $ACCENT_RESOLVED"
+    fi
 
     # Install / resolve themes (name-or-path)
     if [[ -n "$ICON_THEME" ]]; then ICON_THEME="$(install_theme "$ICON_THEME")"; fi
