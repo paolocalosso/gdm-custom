@@ -72,6 +72,9 @@ REMOVE_ACCENT_RING=1
 # Corner radius of the login elements (user selector, password field,
 # "Not listed?"). "9999px" = fully rounded (pill). Empty = leave theme default.
 ELEMENT_RADIUS="9999px"
+# Make the user selector (username) background fully transparent, overriding
+# ELEMENT_BG_OPACITY just for that element. 1 = transparent, 0 = use opacity.
+USER_ITEM_TRANSPARENT=1
 
 # Assume "yes" for package installation prompts (set by --yes).
 ASSUME_YES=0
@@ -454,6 +457,22 @@ ${RADIUS}
 ${RING}
 }
 EOF
+        if [[ "$USER_ITEM_TRANSPARENT" == "1" ]]; then
+            # With a single user the item is permanently :selected/:focus, so
+            # those must be transparent too; only :hover keeps a veil (its rule
+            # is emitted last to win the cascade tie).
+            cat >> "$CSS" <<EOF
+.login-dialog-user-list-view .login-dialog-user-list .login-dialog-user-list-item,
+.login-dialog-user-list-view .login-dialog-user-list .login-dialog-user-list-item:focus,
+.login-dialog-user-list-view .login-dialog-user-list .login-dialog-user-list-item:selected,
+.login-dialog-user-list-view .login-dialog-user-list .login-dialog-user-list-item:active {
+  background-color: transparent !important;
+}
+.login-dialog-user-list-view .login-dialog-user-list .login-dialog-user-list-item:hover {
+  background-color: ${RGBA} !important;
+}
+EOF
+        fi
         echo "    • patched: ${CSS#"$WORK"/}"
         hits=$((hits+1))
     done < <(find "$WORK" -type f -name '*.css')
