@@ -74,7 +74,7 @@ REMOVE_ACCENT_RING=1
 ELEMENT_RADIUS="9999px"
 # Make the user selector (username) background fully transparent, overriding
 # ELEMENT_BG_OPACITY just for that element. 1 = transparent, 0 = use opacity.
-USER_ITEM_TRANSPARENT=1
+USER_ITEM_TRANSPARENT=0
 # Hide the "Not listed?" button on the greeter (St has no 'visibility', so it
 # is collapsed via opacity + zero size). 1 = hidden, 0 = shown.
 HIDE_NOT_LISTED=1
