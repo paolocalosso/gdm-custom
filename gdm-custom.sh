@@ -88,6 +88,9 @@ ACCENT_FROM_BACKGROUND=1
 # Manual accent override, e.g. "#e0af68". Wins over ACCENT_FROM_BACKGROUND.
 # Empty = auto/none.
 ACCENT_COLOR=""
+# Open the interactive palette picker for the border color (set by --pick-accent
+# or during interactive setup). 1 = open, 0 = no.
+DO_PICK_ACCENT=0
 
 # Assume "yes" for package installation prompts (set by --yes).
 ASSUME_YES=0
@@ -143,6 +146,8 @@ OPTIONS:
       --opacity F          flattened element background opacity 0-1 (default: $ELEMENT_BG_OPACITY)
       --no-shell-patch     do not flatten grey element backgrounds
       --keep-accent-ring   keep the accent focus ring around entries/buttons
+  -a, --accent HEX         border/effect color, e.g. "#7aa2f7"
+      --pick-accent        choose the border color from a TUI palette
   -y, --yes                assume "yes" for package install prompts
       --picker NAME        file manager for interactive selection: yazi|ranger|none
       --no-picker          type paths manually instead of opening a file manager
@@ -323,6 +328,10 @@ prompt_config() {
         ask BACKGROUND_SIZE    "Background fit"              "$BACKGROUND_SIZE"
         ask ELEMENT_BG_OPACITY "Element background opacity"  "$ELEMENT_BG_OPACITY"
     fi
+
+    local pa
+    read -r -p "Pick the border/effect color from a palette? [y/N] " pa || true
+    [[ "${pa,,}" =~ ^y ]] && pick_accent
     echo
 }
 
@@ -512,22 +521,20 @@ EOF
 StEntry {
   transition-duration: 200ms !important;
 }
-/* brighten veil + accent border on hover */
+/* accent border on hover (dark veil background kept) */
 .login-dialog-user-list-view .login-dialog-user-list .login-dialog-user-list-item:hover,
 .login-dialog .login-dialog-auth-list-item:hover,
 .login-dialog .login-dialog-prompt-entry:hover,
 .login-dialog-prompt-entry:hover,
 StEntry:hover {
-  background-color: rgba(255,255,255,0.12) !important;
   box-shadow: inset 0 0 0 2px st-transparentize(${ACC}, 0.45) !important;
 }
-/* accent tint + stronger accent border on selected / focused */
+/* stronger accent border on selected / focused (dark veil background kept) */
 .login-dialog-user-list-view .login-dialog-user-list .login-dialog-user-list-item:selected,
 .login-dialog .login-dialog-auth-list-item:selected,
 .login-dialog .login-dialog-prompt-entry:focus,
 .login-dialog-prompt-entry:focus,
 StEntry:focus {
-  background-color: st-transparentize(${ACC}, 0.80) !important;
   box-shadow: inset 0 0 0 2px st-transparentize(${ACC}, 0.30) !important;
 }
 EOF
@@ -660,6 +667,37 @@ print(best or "")
     printf '%s' "${hex,,}"
 }
 
+# Interactive TUI palette to choose the effect border color. Sets ACCENT_COLOR
+# (or ACCENT_FROM_BACKGROUND). Uses ANSI truecolor swatches, no dependencies.
+pick_accent() {
+    [[ -t 0 && -t 1 ]] || { warn "No terminal — skipping palette picker."; return; }
+    local -a names=(Red Orange Yellow Green Teal Blue Purple Pink
+                    "Gruvbox yellow" "Gruvbox orange" "Tokyo blue" "Mauve")
+    local -a hexes=(e01b24 ff7800 f6d32d 33d17a 00b4a0 3584e4 9141ac ff66c4
+                    d79921 d65d0e 7aa2f7 cba6f7)
+    echo "" >&2
+    echo "Choose the border/effect color:" >&2
+    local i h r g b
+    for i in "${!names[@]}"; do
+        h="${hexes[i]}"; r=$((16#${h:0:2})); g=$((16#${h:2:2})); b=$((16#${h:4:2}))
+        printf '  %2d) \e[48;2;%d;%d;%dm    \e[0m #%s  %s\n' \
+            "$((i+1))" "$r" "$g" "$b" "$h" "${names[i]}" >&2
+    done
+    printf '   c) custom hex    b) dominant from background    g) GNOME accent\n' >&2
+    local ans; read -r -p "Selection [b]: " ans
+    case "${ans:-b}" in
+        c|C) read -r -p "  Hex (#rrggbb): " ans
+             [[ "$ans" =~ ^#?[0-9A-Fa-f]{6}$ ]] && { ACCENT_COLOR="#${ans#\#}"; ACCENT_FROM_BACKGROUND=0; } \
+                                                 || warn "Invalid hex — keeping current." ;;
+        b|B) ACCENT_COLOR=""; ACCENT_FROM_BACKGROUND=1 ;;
+        g|G) ACCENT_COLOR=""; ACCENT_FROM_BACKGROUND=0 ;;
+        *)   if [[ "$ans" =~ ^[0-9]+$ ]] && (( ans>=1 && ans<=${#hexes[@]} )); then
+                 ACCENT_COLOR="#${hexes[ans-1]}"; ACCENT_FROM_BACKGROUND=0
+             else warn "Invalid choice — keeping current."; fi ;;
+    esac
+    [[ -n "$ACCENT_COLOR" ]] && info "Border color: $ACCENT_COLOR" >&2
+}
+
 build_multi_bg() {
     local IM="$1"; shift
     local -a rects=("$@")
@@ -702,6 +740,7 @@ do_apply() {
     [[ -n "$IM" ]] || die "ImageMagick not available."
 
     # Resolve the effect accent color (global, read by patch_shell_theme).
+    [[ "$DO_PICK_ACCENT" == "1" ]] && pick_accent
     ACCENT_RESOLVED=""
     if [[ -n "$ACCENT_COLOR" ]]; then
         ACCENT_RESOLVED="$ACCENT_COLOR"
@@ -822,6 +861,8 @@ while [[ $# -gt 0 ]]; do
         --opacity)         ELEMENT_BG_OPACITY="$2"; GOT_CONFIG=1; shift 2 ;;
         --no-shell-patch)  PATCH_SHELL_THEME=0; GOT_CONFIG=1; shift ;;
         --keep-accent-ring) REMOVE_ACCENT_RING=0; GOT_CONFIG=1; shift ;;
+        -a|--accent)       ACCENT_COLOR="#${2#\#}"; ACCENT_FROM_BACKGROUND=0; GOT_CONFIG=1; shift 2 ;;
+        --pick-accent)     DO_PICK_ACCENT=1; GOT_CONFIG=1; shift ;;
         -y|--yes)          ASSUME_YES=1; shift ;;
         --no-picker)       USE_PICKER=0; shift ;;
         --picker)
